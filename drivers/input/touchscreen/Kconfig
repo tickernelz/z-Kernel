@@ -1097,4 +1097,8 @@ config TOUCHSCREEN_H2X
 
 	  If unsure, say N.
 
+config TOUCHSCREEN_DOUBLETAP2WAKE
+	tristate "DoubleTap2Wake for touchscreens"
+	default n
+
 endif
