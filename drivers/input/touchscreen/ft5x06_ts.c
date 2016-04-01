@@ -298,6 +298,309 @@ static int ft5x0x_read_reg(struct i2c_client *client, u8 addr, u8 *val)
 	return ft5x06_i2c_read(client, &addr, 1, val, 1);
 }
 
+#ifdef CONFIG_TOUCHSCREEN_FT5X06_PSENSOR
+static void ft5x06_psensor_enable(struct ft5x06_ts_data *data, int enable)
+{
+	u8 state;
+	int ret = -1;
+
+	if (data->client == NULL)
+		return;
+
+	ft5x0x_read_reg(data->client, FT_REG_PSENSOR_ENABLE, &state);
+	if (enable)
+		state |= FT_PSENSOR_ENABLE_MASK;
+	else
+		state &= ~FT_PSENSOR_ENABLE_MASK;
+
+	ret = ft5x0x_write_reg(data->client, FT_REG_PSENSOR_ENABLE, state);
+	if (ret < 0)
+		dev_err(&data->client->dev,
+			"write psensor switch command failed\n");
+	return;
+}
+
+static int ft5x06_psensor_enable_set(struct sensors_classdev *sensors_cdev,
+		unsigned int enable)
+{
+	struct ft5x06_psensor_platform_data *psensor_pdata =
+		container_of(sensors_cdev,
+			struct ft5x06_psensor_platform_data, ps_cdev);
+	struct ft5x06_ts_data *data = psensor_pdata->data;
+	struct input_dev *input_dev = data->psensor_pdata->input_psensor_dev;
+
+	mutex_lock(&input_dev->mutex);
+	ft5x06_psensor_enable(data, enable);
+	psensor_pdata->tp_psensor_data = FT_PSENSOR_ORIGINAL_STATE_FAR;
+	if (enable)
+		psensor_pdata->tp_psensor_opened = 1;
+	else
+		psensor_pdata->tp_psensor_opened = 0;
+	mutex_unlock(&input_dev->mutex);
+	return enable;
+}
+
+static int ft5x06_read_tp_psensor_data(struct ft5x06_ts_data *data)
+{
+	u8 psensor_status;
+	char tmp;
+	int ret = 1;
+
+	ft5x0x_read_reg(data->client,
+			FT_REG_PSENSOR_STATUS, &psensor_status);
+
+	tmp = data->psensor_pdata->tp_psensor_data;
+	if (psensor_status == FT_PSENSOR_STATUS_NEAR)
+		data->psensor_pdata->tp_psensor_data =
+						FT_PSENSOR_FAR_TO_NEAR;
+	else if (psensor_status == FT_PSENSOR_STATUS_FAR)
+		data->psensor_pdata->tp_psensor_data =
+						FT_PSENSOR_NEAR_TO_FAR;
+
+	if (tmp != data->psensor_pdata->tp_psensor_data) {
+		dev_dbg(&data->client->dev,
+				"%s sensor data changed\n", __func__);
+		ret = 0;
+	}
+	return ret;
+}
+#else
+static int ft5x06_psensor_enable_set(struct sensors_classdev *sensors_cdev,
+		unsigned int enable)
+{
+	return enable;
+}
+
+static int ft5x06_read_tp_psensor_data(struct ft5x06_ts_data *data)
+{
+	return 0;
+}
+#endif
+
+#ifdef CONFIG_TOUCHSCREEN_FT5X06_GESTURE
+static ssize_t ft5x06_gesture_enable_to_set_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct ft5x06_ts_data *data = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			data->gesture_pdata->gesture_enable_to_set);
+}
+
+static ssize_t ft5x06_gesture_enable_to_set_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t size)
+{
+	struct ft5x06_ts_data *data = dev_get_drvdata(dev);
+	unsigned long value = 0;
+	int ret;
+
+	if (data->suspended)
+		return -EINVAL;
+
+	ret = kstrtoul(buf, 16, &value);
+	if (ret < 0) {
+		dev_err(dev, "%s:kstrtoul failed, ret=0x%x\n",
+			__func__, ret);
+		return ret;
+	}
+
+	if (1 == value)
+		data->gesture_pdata->gesture_enable_to_set = 1;
+	else
+		data->gesture_pdata->gesture_enable_to_set = 0;
+	return size;
+}
+
+static DEVICE_ATTR(enable, 0664,
+		ft5x06_gesture_enable_to_set_show,
+		ft5x06_gesture_enable_to_set_store);
+
+static int ft5x06_entry_pocket(struct device *dev)
+{
+	return ft5x06_ts_stop(dev);
+}
+
+static int ft5x06_leave_pocket(struct device *dev)
+{
+	struct ft5x06_ts_data *data = dev_get_drvdata(dev);
+	int err;
+
+	ft5x06_ts_start(dev);
+	ft5x0x_write_reg(data->client, FT_REG_GESTURE_ENABLE, 1);
+	err = enable_irq_wake(data->client->irq);
+	if (err)
+		dev_err(&data->client->dev,
+			"%s: set_irq_wake failed\n", __func__);
+	data->suspended = true;
+
+	return err;
+}
+
+static ssize_t gesture_in_pocket_mode_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct ft5x06_ts_data *data = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			data->gesture_pdata->in_pocket);
+}
+
+static ssize_t gesture_in_pocket_mode_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t size)
+{
+	struct ft5x06_ts_data *data = dev_get_drvdata(dev);
+	unsigned long value = 0;
+	int ret;
+
+	ret = kstrtoul(buf, 16, &value);
+	if (ret < 0) {
+		dev_err(dev, "%s:kstrtoul failed, ret=0x%x\n",
+			__func__, ret);
+		return ret;
+	}
+
+	if (1 == value && data->gesture_pdata->in_pocket == 0) {
+		data->gesture_pdata->in_pocket = 1;
+		ft5x06_entry_pocket(dev);
+	} else if (0 == value && data->gesture_pdata->in_pocket == 1) {
+		ft5x06_leave_pocket(dev);
+		data->gesture_pdata->in_pocket = 0;
+	}
+	return size;
+}
+
+static DEVICE_ATTR(pocket, 0664,
+		gesture_in_pocket_mode_show,
+		gesture_in_pocket_mode_store);
+
+static int ft5x06_report_gesture_doubleclick(struct input_dev *ip_dev)
+{
+	int i;
+	for (i = 0; i < 2; i++) {
+		input_mt_slot(ip_dev, FT_GESTURE_DEFAULT_TRACKING_ID);
+		input_mt_report_slot_state(ip_dev, MT_TOOL_FINGER, 1);
+		input_report_abs(ip_dev, ABS_MT_POSITION_X,
+					FT_GESTURE_DOUBLECLICK_COORD_X);
+		input_report_abs(ip_dev, ABS_MT_POSITION_Y,
+					FT_GESTURE_DOUBLECLICK_COORD_Y);
+		input_mt_report_pointer_emulation(ip_dev, false);
+		input_sync(ip_dev);
+		input_mt_slot(ip_dev, FT_GESTURE_DEFAULT_TRACKING_ID);
+		input_mt_report_slot_state(ip_dev, MT_TOOL_FINGER, 0);
+		input_mt_report_pointer_emulation(ip_dev, false);
+		input_sync(ip_dev);
+	}
+	return 0;
+}
+
+static int ft5x06_report_gesture(struct i2c_client *i2c_client,
+		struct input_dev *ip_dev)
+{
+	int i, temp, gesture_data_size;
+	int gesture_coord_x, gesture_coord_y;
+	int ret = -1;
+	short pointnum = 0;
+	unsigned char buf[FT_GESTURE_POINTER_NUM_MAX *
+			FT_GESTURE_POINTER_SIZEOF + FT_GESTURE_DATA_HEADER];
+
+	buf[0] = FT_REG_GESTURE_OUTPUT;
+	ret = ft5x06_i2c_read(i2c_client, buf, 1,
+				buf, FT_GESTURE_DATA_HEADER);
+	if (ret < 0) {
+		dev_err(&i2c_client->dev, "%s read touchdata failed.\n",
+			__func__);
+		return ret;
+	}
+
+	/* FW support doubleclick */
+	if (FT_GESTURE_DOUBLECLICK_ID == buf[0]) {
+		ft5x06_report_gesture_doubleclick(ip_dev);
+		return 0;
+	}
+
+	pointnum = (short)(buf[1]) & 0xff;
+	gesture_data_size = pointnum * FT_GESTURE_POINTER_SIZEOF +
+			FT_GESTURE_DATA_HEADER;
+	buf[0] = FT_REG_GESTURE_OUTPUT;
+	temp = gesture_data_size / I2C_TRANSFER_MAX_BYTE;
+	for (i = 0; i < temp; i++)
+		ret = ft5x06_i2c_read(i2c_client, buf, ((i == 0) ? 1 : 0),
+			buf + I2C_TRANSFER_MAX_BYTE * i, I2C_TRANSFER_MAX_BYTE);
+	ret = ft5x06_i2c_read(i2c_client, buf, ((temp == 0) ? 1 : 0),
+			buf + I2C_TRANSFER_MAX_BYTE * temp,
+			gesture_data_size - I2C_TRANSFER_MAX_BYTE * temp);
+	if (ret < 0) {
+		dev_err(&i2c_client->dev, "%s read touchdata failed.\n",
+			__func__);
+		return ret;
+	}
+
+	for (i = 0; i < pointnum; i++) {
+		gesture_coord_x = (((s16) buf[FT_GESTURE_DATA_HEADER +
+				(FT_GESTURE_POINTER_SIZEOF * i)]) & 0x0F) << 8 |
+				(((s16) buf[FT_GESTURE_DATA_HEADER + 1 +
+				(FT_GESTURE_POINTER_SIZEOF * i)]) & 0xFF);
+		gesture_coord_y = (((s16) buf[FT_GESTURE_DATA_HEADER + 2 +
+				(FT_GESTURE_POINTER_SIZEOF * i)]) & 0x0F) << 8 |
+				(((s16) buf[FT_GESTURE_DATA_HEADER + 3 +
+				(FT_GESTURE_POINTER_SIZEOF * i)]) & 0xFF);
+		input_mt_slot(ip_dev, FT_GESTURE_DEFAULT_TRACKING_ID);
+		input_mt_report_slot_state(ip_dev, MT_TOOL_FINGER, 1);
+		input_report_abs(ip_dev, ABS_MT_POSITION_X, gesture_coord_x);
+		input_report_abs(ip_dev, ABS_MT_POSITION_Y, gesture_coord_y);
+		input_mt_report_pointer_emulation(ip_dev, false);
+		input_sync(ip_dev);
+	}
+	input_mt_slot(ip_dev, FT_GESTURE_DEFAULT_TRACKING_ID);
+	input_mt_report_slot_state(ip_dev, MT_TOOL_FINGER, 0);
+	input_mt_report_pointer_emulation(ip_dev, false);
+	input_sync(ip_dev);
+
+	return 0;
+}
+#else
+static DEVICE_ATTR(pocket, 0664, NULL, NULL);
+static DEVICE_ATTR(enable, 0664, NULL, NULL);
+
+static int ft5x06_report_gesture(struct i2c_client *i2c_client,
+		struct input_dev *ip_dev)
+{
+	return 0;
+}
+#endif
+
+#ifdef CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE
+
+static int dt2w_panel_mode(struct device *dev, char *mode)
+{
+	struct ft5x06_ts_data *data = dev_get_drvdata(dev);
+	char txbuf[2];
+
+	txbuf[0] = FT_REG_PMODE;
+
+	if (!strcmp(mode, "suspend")) {
+		disable_irq(data->client->irq);
+		txbuf[1] = FT_PMODE_MONITOR;
+	} else if (!strcmp(mode, "resume")) {
+		enable_irq(data->client->irq);
+		txbuf[1] = FT_PMODE_ACTIVE;
+	}
+
+	mutex_lock(&data->input_dev->mutex);
+	ft5x06_i2c_write(data->client, txbuf, sizeof(txbuf));
+	mutex_unlock(&data->input_dev->mutex);
+
+	if (!strcmp(mode, "suspend"))
+		enable_irq_wake(data->client->irq);
+	else if (!strcmp(mode, "resume"))
+		disable_irq_wake(data->client->irq);
+
+	return 0;
+}
+#endif
+
 static void ft5x06_update_fw_vendor_id(struct ft5x06_ts_data *data)
 {
 	struct i2c_client *client = data->client;
@@ -627,18 +930,11 @@ static int ft5x06_ts_resume(struct device *dev)
 {
 	struct ft5x06_ts_data *data = dev_get_drvdata(dev);
 	int err;
-	char txbuf[2];
 
 #ifdef CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE
-	if (dt2w_switch > 0) {
-		disable_irq_wake(data->client->irq);
-		mutex_lock(&data->input_dev->mutex);
-		txbuf[0] = FT_REG_PMODE;
-		txbuf[1] = FT_PMODE_MONITOR;
-		ft5x06_i2c_write(data->client, txbuf, sizeof(txbuf));
-		mutex_unlock(&data->input_dev->mutex);
-		return 0;
-	}
+	bool dt2w_check = (dt2w_switch > 0) && (dt2w_scr_suspended == true);
+	if (dt2w_check)
+		return dt2w_panel_mode(dev, "suspend");
 #endif
 
 	if (data->loading_fw) {
@@ -678,18 +974,11 @@ static int ft5x06_ts_resume(struct device *dev)
 {
 	struct ft5x06_ts_data *data = dev_get_drvdata(dev);
 	int err;
-	char txbuf[2];
-	
+
 #ifdef CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE
-	if (dt2w_switch > 0) {
-		enable_irq_wake(data->client->irq);
-		mutex_lock(&data->input_dev->mutex);
-		txbuf[0] = FT_REG_PMODE;
-		txbuf[1] = FT_PMODE_ACTIVE;
-		ft5x06_i2c_write(data->client, txbuf, sizeof(txbuf));
-		mutex_unlock(&data->input_dev->mutex);
-		return 0;
-	}
+	bool dt2w_check = (dt2w_switch > 0) && (dt2w_scr_suspended == true);
+	if (dt2w_check)
+		return dt2w_panel_mode(dev, "resume");
 #endif
 
 	if (!data->suspended) {
