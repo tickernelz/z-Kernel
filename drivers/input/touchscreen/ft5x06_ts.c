@@ -33,8 +33,8 @@
 #include <linux/input/ft5x06_ts.h>
 #include <linux/power_supply.h>
 
-#ifdef CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE
-#include <linux/input/doubletap2wake.h>
+#ifdef CONFIG_TOUCHSCREEN_ALTERNATIVEWAKE
+#include <linux/input/alternativewake.h>
 #endif
 
 #if defined(CONFIG_FB)
