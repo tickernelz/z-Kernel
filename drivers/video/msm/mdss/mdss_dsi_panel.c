@@ -647,9 +647,7 @@ end:
 	pinfo->blank_state = MDSS_PANEL_BLANK_UNBLANK;
 	pr_debug("%s:-\n", __func__);
 #ifdef CONFIG_TOUCHSCREEN_ALTERNATIVEWAKE
-	if (altwake_chk) {
 	scr_suspended = false;
-	}
 #endif
  	return 0;
 }
@@ -756,9 +754,7 @@ int mdss_dsi_panel_dispparam(struct mdss_panel_data *pdata)
 
 	pr_debug("%s:-\n", __func__);
 #ifdef CONFIG_TOUCHSCREEN_ALTERNATIVEWAKE
-	if (altwake_chk) {
 	scr_suspended = true;
-	}
 #endif
 	return 0;
 }
