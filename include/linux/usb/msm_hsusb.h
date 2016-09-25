@@ -104,14 +104,6 @@ enum msm_usb_phy_type {
 	SNPS_PICO_PHY,
 	SNPS_FEMTO_PHY,
 };
-#if defined(WT_USE_86519_CHARGE_1200)
-#define IDEV_CHG_MAX	2000
-#elif defined(WT_USE_S86001_CHARGE_1000)
-#define IDEV_CHG_MAX	2000
-#elif defined(CONFIG_WT_USE_XIAOMI_CHARGE_1050)
-#define IDEV_CHG_MAX	2000
-#else
-#define IDEV_CHG_MAX	2000
 
 #ifdef CONFIG_MACH_WT88047
 #define IDEV_CHG_MAX		1050

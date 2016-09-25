@@ -698,25 +698,19 @@ static int ft5x06_ts_resume(struct device *dev)
 #endif
 
 #if defined(CONFIG_FB)
-
-static void fb_notify_resume_work(struct work_struct *work)
-{
-	struct ft5x06_ts_data *ft5x06_data =
-			container_of(work, struct ft5x06_ts_data, fb_notify_work);
-	ft5x06_ts_resume(&ft5x06_data->client->dev);
-}
+static bool unblanked_once = false;
 static int fb_notifier_callback(struct notifier_block *self,
 				 unsigned long event, void *data)
 {
 	struct fb_event *evdata = data;
 	int *blank;
 	struct ft5x06_ts_data *ft5x06_data =
-		container_of(self, struct ft5x06_ts_data, fb_notif);
+	container_of(self, struct ft5x06_ts_data, fb_notif);
 
 	if (evdata && evdata->data && event == FB_EVENT_BLANK &&
 			ft5x06_data && ft5x06_data->client) {
 		blank = evdata->data;
-		if (*blank == FB_BLANK_UNBLANK || *blank == FB_BLANK_VSYNC_SUSPEND) { 
+		if (*blank == FB_BLANK_UNBLANK) { 
 			if (unblanked_once)
 				ft5x06_ts_resume(&ft5x06_data->client->dev);
 		} else if (*blank == FB_BLANK_POWERDOWN) {
@@ -724,7 +718,6 @@ static int fb_notifier_callback(struct notifier_block *self,
 			ft5x06_ts_suspend(&ft5x06_data->client->dev);
 		}
 	}
-
 	return 0;
 }
 #elif defined(CONFIG_HAS_EARLYSUSPEND)
@@ -2740,7 +2733,6 @@ if (err < 0)
 #endif
 
 #if defined(CONFIG_FB)
-	INIT_WORK(&data->fb_notify_work, fb_notify_resume_work);
 	data->fb_notif.notifier_call = fb_notifier_callback;
 
 	err = fb_register_client(&data->fb_notif);
